@@ -320,11 +320,7 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None:
-                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
-                    continue
-                if rs_sts < 80:
-                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 # EPS Growth チェック
@@ -381,11 +377,7 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None:
-                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
-                    continue
-                if rs_sts < 80:
-                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 # A/D Rating チェック
@@ -464,11 +456,7 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None:
-                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
-                    continue
-                if rs_sts < 80:
-                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 # 移動平均チェック
@@ -564,11 +552,7 @@ class IBDScreeners:
 
                 # RS STS% チェック
                 rs_sts = self.get_rs_sts_percentile(ticker)
-                if rs_sts is None:
-                    print(f"  DEBUG: {ticker} - RS STS% is None (データ不足またはエラー)")
-                    continue
-                if rs_sts < 80:
-                    print(f"  DEBUG: {ticker} - RS STS% = {rs_sts:.2f} < 80")
+                if rs_sts is None or rs_sts < 80:
                     continue
 
                 passed.append(ticker)
@@ -786,6 +770,8 @@ class IBDScreeners:
 
     def write_screeners_to_sheet(self, screener_results: Dict[str, List[str]]):
         """スクリーナー結果をGoogleスプレッドシートに出力（チャート画像を含む）"""
+        import time
+
         # データベースから最新の価格データ日付を取得してシート名とする
         latest_date = self.db.get_latest_price_date()
         if latest_date:
@@ -798,12 +784,14 @@ class IBDScreeners:
         try:
             worksheet = self.spreadsheet.worksheet(sheet_name)
             worksheet.clear()
+            time.sleep(0.5)  # API呼び出し後に待機
         except gspread.WorksheetNotFound:
             worksheet = self.spreadsheet.add_worksheet(
                 title=sheet_name,
                 rows=1000,  # チャート挿入のため行数を増やす
                 cols=10
             )
+            time.sleep(0.5)  # API呼び出し後に待機
 
         # セクターローテーションデータを取得（背景色設定用）
         print("\nIndustry Group象限データを読み込み中...")
@@ -814,6 +802,7 @@ class IBDScreeners:
         for screener_name, tickers in screener_results.items():
             # スクリーナー名を出力
             worksheet.update(f'A{current_row}', [[screener_name]])
+            time.sleep(0.3)  # API呼び出し後に待機
 
             # ヘッダー行のフォーマット
             header_format = {
@@ -826,7 +815,9 @@ class IBDScreeners:
                 'horizontalAlignment': 'LEFT'
             }
             worksheet.format(f'A{current_row}:J{current_row}', header_format)
+            time.sleep(0.3)  # API呼び出し後に待機
             worksheet.merge_cells(f'A{current_row}:J{current_row}')
+            time.sleep(0.3)  # API呼び出し後に待機
             current_row += 1
 
             # ティッカーを10個ずつ横に並べる
@@ -841,9 +832,11 @@ class IBDScreeners:
                 if rows_data:
                     end_row = current_row + len(rows_data) - 1
                     worksheet.update(f'A{current_row}:J{end_row}', rows_data)
+                    time.sleep(0.5)  # API呼び出し後に待機
 
-                    # 各ティッカーセルに背景色を適用
+                    # 各ティッカーセルに背景色を適用（バッチ処理）
                     print(f"  {screener_name}: ティッカーに背景色を適用中...")
+                    format_requests = []
                     for row_idx, row_tickers in enumerate(rows_data):
                         for col_idx, ticker in enumerate(row_tickers):
                             if ticker:  # 空文字列でない場合のみ
@@ -861,7 +854,29 @@ class IBDScreeners:
                                         },
                                         'horizontalAlignment': 'CENTER'
                                     }
-                                    worksheet.format(cell_range, cell_format)
+                                    format_requests.append((cell_range, cell_format))
+
+                    # バッチでフォーマットを適用（レート制限を回避）
+                    if format_requests:
+                        import time
+                        # 50個ずつバッチ処理（batch_formatで1リクエストにまとめる）
+                        batch_size = 50
+                        for i in range(0, len(format_requests), batch_size):
+                            batch = format_requests[i:i+batch_size]
+                            # batch_formatを使用して1回のAPIリクエストで処理
+                            try:
+                                worksheet.batch_format(batch)
+                            except Exception as e:
+                                # エラー時は個別にフォーマットを試みる
+                                print(f"    警告: バッチフォーマットエラー ({str(e)})、個別処理にフォールバック")
+                                for cell_range, cell_format in batch:
+                                    try:
+                                        worksheet.format(cell_range, cell_format)
+                                    except:
+                                        pass  # 個別のエラーは無視
+                            # レート制限回避のため待機（最後のバッチ以外）
+                            if i + batch_size < len(format_requests):
+                                time.sleep(1.5)
 
                     current_row = end_row + 1
 
@@ -884,6 +899,7 @@ class IBDScreeners:
 
             # チャートタイトルを追加
             worksheet.update(f'A{current_row}', [['Industry Group RS Rotation Chart']])
+            time.sleep(0.5)  # API呼び出し後に待機
             title_format = {
                 'backgroundColor': {'red': 0.1, 'green': 0.1, 'blue': 0.1},
                 'textFormat': {
@@ -894,7 +910,9 @@ class IBDScreeners:
                 'horizontalAlignment': 'CENTER'
             }
             worksheet.format(f'A{current_row}:J{current_row}', title_format)
+            time.sleep(0.3)  # API呼び出し後に待機
             worksheet.merge_cells(f'A{current_row}:J{current_row}')
+            time.sleep(0.3)  # API呼び出し後に待機
             current_row += 1
 
             # チャート画像をGoogle Driveにアップロードしてシートに挿入
@@ -911,6 +929,7 @@ class IBDScreeners:
                         f.write(chart_bytes)
                     chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
                     worksheet.update(f'A{current_row}', [[chart_info_text]])
+                    time.sleep(0.3)  # API呼び出し後に待機
             except Exception as e:
                 print(f"  チャート挿入エラー: {str(e)}")
                 # フォールバック: ローカルに保存
@@ -918,6 +937,7 @@ class IBDScreeners:
                     f.write(chart_bytes)
                 chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
                 worksheet.update(f'A{current_row}', [[chart_info_text]])
+                time.sleep(0.3)  # API呼び出し後に待機
         else:
             print("  チャート生成に失敗しました（データが不足しています）")
 
@@ -942,6 +962,7 @@ class IBDScreeners:
             from googleapiclient.http import MediaInMemoryUpload
             import tempfile
             import os
+            import time
 
             # Google Drive APIサービスを構築
             # gspreadの認証情報を再利用
@@ -975,6 +996,7 @@ class IBDScreeners:
             # Google Sheetsに=IMAGE()関数を使って画像を挿入
             # セルの高さを調整して画像を表示
             worksheet.update(f'A{row}', [[f'=IMAGE("{image_url}", 1)']])
+            time.sleep(0.5)  # API呼び出し後に待機
 
             # セルのサイズを調整（行の高さを設定）
             # Google Sheets APIを使用して行の高さを設定
