@@ -1,0 +1,7 @@
+services:
+  app:
+    build: .
+    volumes:
+      - .:/app
+    # Keep the container running in the background
+    tty: true

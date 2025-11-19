@@ -1,0 +1,75 @@
+{
+  "name": "StageAlgo Dev Container",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+
+  // Features
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  // VSCode settings
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.linting.enabled": true,
+        "python.linting.pylintEnabled": true,
+        "python.formatting.autopep8Path": "/usr/local/bin/autopep8",
+        "python.formatting.blackPath": "/usr/local/bin/black",
+        "python.formatting.yapfPath": "/usr/local/bin/yapf",
+        "python.linting.banditPath": "/usr/local/bin/bandit",
+        "python.linting.flake8Path": "/usr/local/bin/flake8",
+        "python.linting.mypyPath": "/usr/local/bin/mypy",
+        "python.linting.pycodestylePath": "/usr/local/bin/pycodestyle",
+        "python.linting.pydocstylePath": "/usr/local/bin/pydocstyle",
+        "python.linting.pylintPath": "/usr/local/bin/pylint",
+        "python.testing.pytestEnabled": true,
+        "python.testing.pytestPath": "/usr/local/bin/pytest",
+        "[python]": {
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
+        },
+        "files.exclude": {
+          "**/__pycache__": true,
+          "**/*.pyc": true
+        }
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.black-formatter",
+        "ms-toolsai.jupyter",
+        "donjayamanne.python-environment-manager",
+        "njpwerner.autodocstring"
+      ]
+    }
+  },
+
+  // Container environment
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+
+  // Lifecycle scripts
+  "postCreateCommand": "pip install -r requirements.txt && pip install pytest black flake8 mypy pylint autopep8",
+
+  // Mount docker socket for docker-in-docker if needed
+  "mounts": [
+    "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind"
+  ],
+
+  // Forward ports if needed for dashboards
+  "forwardPorts": [8050, 8888],
+
+  // Run as root to avoid permission issues (can be changed to non-root if preferred)
+  "remoteUser": "root"
+}
