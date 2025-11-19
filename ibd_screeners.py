@@ -721,6 +721,69 @@ class IBDScreeners:
         print(f"スプレッドシートURL: {self.spreadsheet.url}")
         print("="*80)
 
+    def _get_industry_group_quadrant(self, ticker: str, sector_rotation_df) -> str:
+        """
+        ティッカーのIndustry Groupがどの象限にあるかを判定
+
+        Args:
+            ticker: ティッカーシンボル
+            sector_rotation_df: セクターローテーションデータ
+
+        Returns:
+            str: 'Strong', 'Improving', 'Weakening', 'Weak', または None
+        """
+        if sector_rotation_df is None or len(sector_rotation_df) == 0:
+            return None
+
+        # ティッカーのIndustry Groupを取得
+        profile = self.db.get_company_profile(ticker)
+        if not profile or not profile.get('industry'):
+            return None
+
+        industry = profile['industry']
+
+        # セクターローテーションデータから該当するIndustry Groupを検索
+        industry_data = sector_rotation_df[sector_rotation_df['industry'] == industry]
+
+        if len(industry_data) == 0:
+            return None
+
+        # 週次・月次RSを取得
+        weekly_rs = industry_data.iloc[0]['weekly_rs']
+        monthly_rs = industry_data.iloc[0]['monthly_rs']
+
+        # パーセンタイルランキングに変換（0-100）
+        weekly_percentile = (sector_rotation_df['weekly_rs'] <= weekly_rs).sum() / len(sector_rotation_df) * 100
+        monthly_percentile = (sector_rotation_df['monthly_rs'] <= monthly_rs).sum() / len(sector_rotation_df) * 100
+
+        # 象限を判定
+        if weekly_percentile >= 50 and monthly_percentile >= 50:
+            return 'Strong'
+        elif weekly_percentile >= 50 and monthly_percentile < 50:
+            return 'Improving'
+        elif weekly_percentile < 50 and monthly_percentile >= 50:
+            return 'Weakening'
+        else:
+            return 'Weak'
+
+    def _get_quadrant_color(self, quadrant: str) -> dict:
+        """
+        象限に対応する背景色を取得
+
+        Args:
+            quadrant: 'Strong', 'Improving', 'Weakening', 'Weak'
+
+        Returns:
+            dict: Google Sheets APIのbackgroundColor形式
+        """
+        colors = {
+            'Strong': {'red': 0.785, 'green': 0.902, 'blue': 0.788},      # #c8e6c9
+            'Improving': {'red': 0.910, 'green': 0.961, 'blue': 0.914},   # #e8f5e9
+            'Weakening': {'red': 1.0, 'green': 0.922, 'blue': 0.933},     # #ffebee
+            'Weak': {'red': 1.0, 'green': 0.804, 'blue': 0.824}           # #ffcdd2
+        }
+        return colors.get(quadrant, {'red': 1, 'green': 1, 'blue': 1})  # デフォルトは白
+
     def write_screeners_to_sheet(self, screener_results: Dict[str, List[str]]):
         """スクリーナー結果をGoogleスプレッドシートに出力（チャート画像を含む）"""
         # データベースから最新の価格データ日付を取得してシート名とする
@@ -741,6 +804,10 @@ class IBDScreeners:
                 rows=1000,  # チャート挿入のため行数を増やす
                 cols=10
             )
+
+        # セクターローテーションデータを取得（背景色設定用）
+        print("\nIndustry Group象限データを読み込み中...")
+        sector_rotation_df = self.db.get_sector_rotation_data()
 
         current_row = 1
 
@@ -774,6 +841,28 @@ class IBDScreeners:
                 if rows_data:
                     end_row = current_row + len(rows_data) - 1
                     worksheet.update(f'A{current_row}:J{end_row}', rows_data)
+
+                    # 各ティッカーセルに背景色を適用
+                    print(f"  {screener_name}: ティッカーに背景色を適用中...")
+                    for row_idx, row_tickers in enumerate(rows_data):
+                        for col_idx, ticker in enumerate(row_tickers):
+                            if ticker:  # 空文字列でない場合のみ
+                                quadrant = self._get_industry_group_quadrant(ticker, sector_rotation_df)
+                                if quadrant:
+                                    cell_row = current_row + row_idx
+                                    cell_col = chr(65 + col_idx)  # A, B, C, ...
+                                    cell_range = f'{cell_col}{cell_row}'
+
+                                    color = self._get_quadrant_color(quadrant)
+                                    cell_format = {
+                                        'backgroundColor': color,
+                                        'textFormat': {
+                                            'fontSize': 10
+                                        },
+                                        'horizontalAlignment': 'CENTER'
+                                    }
+                                    worksheet.format(cell_range, cell_format)
+
                     current_row = end_row + 1
 
             # スクリーナー間に空行を挿入
