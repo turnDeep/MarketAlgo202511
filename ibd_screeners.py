@@ -768,6 +768,36 @@ class IBDScreeners:
         }
         return colors.get(quadrant, {'red': 1, 'green': 1, 'blue': 1})  # デフォルトは白
 
+    def _retry_api_call(self, func, max_retries=4, initial_delay=2):
+        """
+        API呼び出しをリトライロジック付きで実行
+
+        Args:
+            func: 実行する関数
+            max_retries: 最大リトライ回数
+            initial_delay: 初期待機時間（秒）
+
+        Returns:
+            関数の実行結果
+        """
+        import time
+        from gspread.exceptions import APIError
+
+        delay = initial_delay
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except APIError as e:
+                if '429' in str(e) and attempt < max_retries - 1:
+                    print(f"    レート制限エラー（429）が発生しました。{delay}秒後にリトライします... (試行 {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                    delay *= 2  # 指数バックオフ
+                else:
+                    raise
+
+        # すべてのリトライが失敗した場合
+        raise Exception(f"API呼び出しが{max_retries}回のリトライ後も失敗しました")
+
     def write_screeners_to_sheet(self, screener_results: Dict[str, List[str]]):
         """スクリーナー結果をGoogleスプレッドシートに出力（チャート画像を含む）"""
         import time
@@ -783,15 +813,15 @@ class IBDScreeners:
 
         try:
             worksheet = self.spreadsheet.worksheet(sheet_name)
-            worksheet.clear()
-            time.sleep(0.5)  # API呼び出し後に待機
+            self._retry_api_call(lambda: worksheet.clear())
+            time.sleep(1)  # API呼び出し後に待機
         except gspread.WorksheetNotFound:
             worksheet = self.spreadsheet.add_worksheet(
                 title=sheet_name,
                 rows=1000,  # チャート挿入のため行数を増やす
                 cols=10
             )
-            time.sleep(0.5)  # API呼び出し後に待機
+            time.sleep(1)  # API呼び出し後に待機
 
         # セクターローテーションデータを取得（背景色設定用）
         print("\nIndustry Group象限データを読み込み中...")
@@ -799,12 +829,16 @@ class IBDScreeners:
 
         current_row = 1
 
+        # すべてのフォーマット処理を収集してバッチで実行
+        all_format_requests = []
+
         for screener_name, tickers in screener_results.items():
             # スクリーナー名を出力
-            worksheet.update(f'A{current_row}', [[screener_name]])
-            time.sleep(0.3)  # API呼び出し後に待機
+            header_row = current_row
+            self._retry_api_call(lambda row=header_row, name=screener_name: worksheet.update(f'A{row}', [[name]]))
+            time.sleep(0.5)  # API呼び出し後に待機
 
-            # ヘッダー行のフォーマット
+            # ヘッダー行のフォーマット（後でバッチ処理）
             header_format = {
                 'backgroundColor': {'red': 0.2, 'green': 0.4, 'blue': 0.6},
                 'textFormat': {
@@ -814,10 +848,10 @@ class IBDScreeners:
                 },
                 'horizontalAlignment': 'LEFT'
             }
-            worksheet.format(f'A{current_row}:J{current_row}', header_format)
-            time.sleep(0.3)  # API呼び出し後に待機
-            worksheet.merge_cells(f'A{current_row}:J{current_row}')
-            time.sleep(0.3)  # API呼び出し後に待機
+            all_format_requests.append((f'A{header_row}:J{header_row}', header_format))
+
+            self._retry_api_call(lambda row=header_row: worksheet.merge_cells(f'A{row}:J{row}'))
+            time.sleep(0.5)  # API呼び出し後に待機
             current_row += 1
 
             # ティッカーを10個ずつ横に並べる
@@ -830,13 +864,13 @@ class IBDScreeners:
                     rows_data.append(row_tickers)
 
                 if rows_data:
-                    end_row = current_row + len(rows_data) - 1
-                    worksheet.update(f'A{current_row}:J{end_row}', rows_data)
-                    time.sleep(0.5)  # API呼び出し後に待機
+                    start_row = current_row
+                    end_row = start_row + len(rows_data) - 1
+                    self._retry_api_call(lambda s=start_row, e=end_row, data=rows_data: worksheet.update(f'A{s}:J{e}', data))
+                    time.sleep(1)  # API呼び出し後に待機
 
-                    # 各ティッカーセルに背景色を適用（バッチ処理）
-                    print(f"  {screener_name}: ティッカーに背景色を適用中...")
-                    format_requests = []
+                    # 各ティッカーセルに背景色を適用（後でバッチ処理）
+                    print(f"  {screener_name}: ティッカーの背景色設定を準備中...")
                     for row_idx, row_tickers in enumerate(rows_data):
                         for col_idx, ticker in enumerate(row_tickers):
                             if ticker:  # 空文字列でない場合のみ
@@ -854,34 +888,28 @@ class IBDScreeners:
                                         },
                                         'horizontalAlignment': 'CENTER'
                                     }
-                                    format_requests.append((cell_range, cell_format))
-
-                    # バッチでフォーマットを適用（レート制限を回避）
-                    if format_requests:
-                        import time
-                        # 50個ずつバッチ処理（batch_formatで1リクエストにまとめる）
-                        batch_size = 50
-                        for i in range(0, len(format_requests), batch_size):
-                            batch = format_requests[i:i+batch_size]
-                            # batch_formatを使用して1回のAPIリクエストで処理
-                            try:
-                                worksheet.batch_format(batch)
-                            except Exception as e:
-                                # エラー時は個別にフォーマットを試みる
-                                print(f"    警告: バッチフォーマットエラー ({str(e)})、個別処理にフォールバック")
-                                for cell_range, cell_format in batch:
-                                    try:
-                                        worksheet.format(cell_range, cell_format)
-                                    except:
-                                        pass  # 個別のエラーは無視
-                            # レート制限回避のため待機（最後のバッチ以外）
-                            if i + batch_size < len(format_requests):
-                                time.sleep(1.5)
+                                    all_format_requests.append((cell_range, cell_format))
 
                     current_row = end_row + 1
 
             # スクリーナー間に空行を挿入
             current_row += 1
+
+        # すべてのフォーマットをバッチ処理（レート制限を回避）
+        if all_format_requests:
+            print(f"\n背景色を一括適用中（{len(all_format_requests)}個のセル）...")
+            batch_size = 100  # 100個ずつバッチ処理
+            for i in range(0, len(all_format_requests), batch_size):
+                batch = all_format_requests[i:i+batch_size]
+                try:
+                    self._retry_api_call(lambda: worksheet.batch_format(batch))
+                    print(f"  進捗: {min(i + batch_size, len(all_format_requests))}/{len(all_format_requests)} セル完了")
+                except Exception as e:
+                    # エラー時はスキップ
+                    print(f"  警告: バッチフォーマットエラー ({str(e)})、スキップします")
+                # レート制限回避のため待機
+                if i + batch_size < len(all_format_requests):
+                    time.sleep(2)
 
         # セクターローテーションチャートを生成
         print("\nセクターローテーションチャートを生成中...")
@@ -898,8 +926,9 @@ class IBDScreeners:
             current_row += 2
 
             # チャートタイトルを追加
-            worksheet.update(f'A{current_row}', [['Industry Group RS Rotation Chart']])
-            time.sleep(0.5)  # API呼び出し後に待機
+            chart_title_row = current_row
+            self._retry_api_call(lambda row=chart_title_row: worksheet.update(f'A{row}', [['Industry Group RS Rotation Chart']]))
+            time.sleep(1)  # API呼び出し後に待機
             title_format = {
                 'backgroundColor': {'red': 0.1, 'green': 0.1, 'blue': 0.1},
                 'textFormat': {
@@ -909,10 +938,10 @@ class IBDScreeners:
                 },
                 'horizontalAlignment': 'CENTER'
             }
-            worksheet.format(f'A{current_row}:J{current_row}', title_format)
-            time.sleep(0.3)  # API呼び出し後に待機
-            worksheet.merge_cells(f'A{current_row}:J{current_row}')
-            time.sleep(0.3)  # API呼び出し後に待機
+            self._retry_api_call(lambda row=chart_title_row, fmt=title_format: worksheet.format(f'A{row}:J{row}', fmt))
+            time.sleep(1)  # API呼び出し後に待機
+            self._retry_api_call(lambda row=chart_title_row: worksheet.merge_cells(f'A{row}:J{row}'))
+            time.sleep(1)  # API呼び出し後に待機
             current_row += 1
 
             # チャート画像をGoogle Driveにアップロードしてシートに挿入
@@ -928,16 +957,18 @@ class IBDScreeners:
                     with open('sector_rotation.png', 'wb') as f:
                         f.write(chart_bytes)
                     chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
-                    worksheet.update(f'A{current_row}', [[chart_info_text]])
-                    time.sleep(0.3)  # API呼び出し後に待機
+                    chart_row = current_row
+                    self._retry_api_call(lambda row=chart_row, text=chart_info_text: worksheet.update(f'A{row}', [[text]]))
+                    time.sleep(1)  # API呼び出し後に待機
             except Exception as e:
                 print(f"  チャート挿入エラー: {str(e)}")
                 # フォールバック: ローカルに保存
                 with open('sector_rotation.png', 'wb') as f:
                     f.write(chart_bytes)
                 chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
-                worksheet.update(f'A{current_row}', [[chart_info_text]])
-                time.sleep(0.3)  # API呼び出し後に待機
+                chart_row = current_row
+                self._retry_api_call(lambda row=chart_row, text=chart_info_text: worksheet.update(f'A{row}', [[text]]))
+                time.sleep(1)  # API呼び出し後に待機
         else:
             print("  チャート生成に失敗しました（データが不足しています）")
 
@@ -995,8 +1026,9 @@ class IBDScreeners:
 
             # Google Sheetsに=IMAGE()関数を使って画像を挿入
             # セルの高さを調整して画像を表示
-            worksheet.update(f'A{row}', [[f'=IMAGE("{image_url}", 1)']])
-            time.sleep(0.5)  # API呼び出し後に待機
+            image_formula = f'=IMAGE("{image_url}", 1)'
+            self._retry_api_call(lambda r=row, formula=image_formula: worksheet.update(f'A{r}', [[formula]]))
+            time.sleep(1)  # API呼び出し後に待機
 
             # セルのサイズを調整（行の高さを設定）
             # Google Sheets APIを使用して行の高さを設定
@@ -1023,10 +1055,14 @@ class IBDScreeners:
                     ]
                 }
 
-                sheets_service.spreadsheets().batchUpdate(
-                    spreadsheetId=worksheet.spreadsheet.id,
-                    body=request_body
-                ).execute()
+                def update_row_height():
+                    return sheets_service.spreadsheets().batchUpdate(
+                        spreadsheetId=worksheet.spreadsheet.id,
+                        body=request_body
+                    ).execute()
+
+                self._retry_api_call(update_row_height)
+                time.sleep(1)  # API呼び出し後に待機
 
             except Exception as e:
                 print(f"  警告: 行の高さ調整に失敗: {str(e)}")
