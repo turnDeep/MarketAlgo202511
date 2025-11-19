@@ -722,7 +722,7 @@ class IBDScreeners:
         print("="*80)
 
     def write_screeners_to_sheet(self, screener_results: Dict[str, List[str]]):
-        """スクリーナー結果をGoogleスプレッドシートに出力"""
+        """スクリーナー結果をGoogleスプレッドシートに出力（チャート画像を含む）"""
         # データベースから最新の価格データ日付を取得してシート名とする
         latest_date = self.db.get_latest_price_date()
         if latest_date:
@@ -738,7 +738,7 @@ class IBDScreeners:
         except gspread.WorksheetNotFound:
             worksheet = self.spreadsheet.add_worksheet(
                 title=sheet_name,
-                rows=500,
+                rows=1000,  # チャート挿入のため行数を増やす
                 cols=10
             )
 
@@ -779,7 +779,154 @@ class IBDScreeners:
             # スクリーナー間に空行を挿入
             current_row += 1
 
+        # セクターローテーションチャートを生成
+        print("\nセクターローテーションチャートを生成中...")
+        from sector_rotation_chart import SectorRotationChart
+
+        chart_generator = SectorRotationChart(db_path=self.db.db_path)
+
+        # チャート画像をバイトデータとして生成
+        chart_bytes = chart_generator.generate_chart_as_bytes(dpi=150)
+        chart_generator.close()
+
+        if chart_bytes:
+            # 空行を2行追加
+            current_row += 2
+
+            # チャートタイトルを追加
+            worksheet.update(f'A{current_row}', [['Industry Group RS Rotation Chart']])
+            title_format = {
+                'backgroundColor': {'red': 0.1, 'green': 0.1, 'blue': 0.1},
+                'textFormat': {
+                    'bold': True,
+                    'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
+                    'fontSize': 14
+                },
+                'horizontalAlignment': 'CENTER'
+            }
+            worksheet.format(f'A{current_row}:J{current_row}', title_format)
+            worksheet.merge_cells(f'A{current_row}:J{current_row}')
+            current_row += 1
+
+            # チャート画像をGoogle Driveにアップロードしてシートに挿入
+            try:
+                image_url = self._upload_image_to_drive_and_insert(
+                    worksheet, chart_bytes, current_row, 'sector_rotation_chart.png'
+                )
+                if image_url:
+                    print(f"  チャートをGoogle Sheetsに挿入しました")
+                else:
+                    print(f"  チャート画像のアップロードに失敗しました")
+                    # フォールバック: ローカルに保存
+                    with open('sector_rotation.png', 'wb') as f:
+                        f.write(chart_bytes)
+                    chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
+                    worksheet.update(f'A{current_row}', [[chart_info_text]])
+            except Exception as e:
+                print(f"  チャート挿入エラー: {str(e)}")
+                # フォールバック: ローカルに保存
+                with open('sector_rotation.png', 'wb') as f:
+                    f.write(chart_bytes)
+                chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
+                worksheet.update(f'A{current_row}', [[chart_info_text]])
+        else:
+            print("  チャート生成に失敗しました（データが不足しています）")
+
         print(f"  '{sheet_name}' シートに出力完了")
+
+    def _upload_image_to_drive_and_insert(self, worksheet, image_bytes: bytes,
+                                           row: int, filename: str) -> str:
+        """
+        画像をGoogle Driveにアップロードし、Google Sheetsに=IMAGE()関数で挿入
+
+        Args:
+            worksheet: ワークシート
+            image_bytes: 画像のバイトデータ
+            row: 挿入する行番号（1始まり）
+            filename: ファイル名
+
+        Returns:
+            str: アップロードされた画像のURL、失敗時はNone
+        """
+        try:
+            from googleapiclient.discovery import build
+            from googleapiclient.http import MediaInMemoryUpload
+            import tempfile
+            import os
+
+            # Google Drive APIサービスを構築
+            # gspreadの認証情報を再利用
+            drive_service = build('drive', 'v3', credentials=self.gc.auth)
+
+            # 画像をGoogle Driveにアップロード
+            file_metadata = {
+                'name': filename,
+                'mimeType': 'image/png'
+            }
+
+            media = MediaInMemoryUpload(image_bytes, mimetype='image/png', resumable=True)
+
+            uploaded_file = drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id, webViewLink, webContentLink'
+            ).execute()
+
+            file_id = uploaded_file.get('id')
+
+            # ファイルを公開設定にする
+            drive_service.permissions().create(
+                fileId=file_id,
+                body={'type': 'anyone', 'role': 'reader'}
+            ).execute()
+
+            # 画像の直接リンクを取得
+            image_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+
+            # Google Sheetsに=IMAGE()関数を使って画像を挿入
+            # セルの高さを調整して画像を表示
+            worksheet.update(f'A{row}', [[f'=IMAGE("{image_url}", 1)']])
+
+            # セルのサイズを調整（行の高さを設定）
+            # Google Sheets APIを使用して行の高さを設定
+            try:
+                sheets_service = build('sheets', 'v4', credentials=self.gc.auth)
+
+                # 行の高さを600ピクセルに設定
+                request_body = {
+                    'requests': [
+                        {
+                            'updateDimensionProperties': {
+                                'range': {
+                                    'sheetId': worksheet.id,
+                                    'dimension': 'ROWS',
+                                    'startIndex': row - 1,  # 0始まり
+                                    'endIndex': row
+                                },
+                                'properties': {
+                                    'pixelSize': 600
+                                },
+                                'fields': 'pixelSize'
+                            }
+                        }
+                    ]
+                }
+
+                sheets_service.spreadsheets().batchUpdate(
+                    spreadsheetId=worksheet.spreadsheet.id,
+                    body=request_body
+                ).execute()
+
+            except Exception as e:
+                print(f"  警告: 行の高さ調整に失敗: {str(e)}")
+
+            return image_url
+
+        except Exception as e:
+            print(f"  画像アップロードエラー: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return None
 
 
 def main():
