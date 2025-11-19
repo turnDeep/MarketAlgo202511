@@ -3,5 +3,13 @@ services:
     build: .
     volumes:
       - .:/app
+      - ./logs:/app/logs
+      - ./ibd_data.db:/app/ibd_data.db
+      - ./credentials.json:/app/credentials.json:ro
+    environment:
+      - TZ=Asia/Tokyo
+    env_file:
+      - .env
     # Keep the container running in the background
     tty: true
+    restart: unless-stopped
