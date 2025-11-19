@@ -799,59 +799,81 @@ class IBDScreeners:
         raise Exception(f"API呼び出しが{max_retries}回のリトライ後も失敗しました")
 
     def write_screeners_to_sheet(self, screener_results: Dict[str, List[str]]):
-        """スクリーナー結果をGoogleスプレッドシートに出力（チャート画像を含む）"""
+        """スクリーナー結果をGoogleスプレッドシートに出力（最適化版）"""
         import time
+        from googleapiclient.discovery import build
 
         # データベースから最新の価格データ日付を取得してシート名とする
         latest_date = self.db.get_latest_price_date()
-        if latest_date:
-            # YYYY-MM-DD形式にフォーマット
-            sheet_name = latest_date
-        else:
-            # 日付が取得できない場合はデフォルト名を使用
-            sheet_name = 'IBD Screeners'
+        sheet_name = latest_date if latest_date else 'IBD Screeners'
 
         try:
             worksheet = self.spreadsheet.worksheet(sheet_name)
             self._retry_api_call(lambda: worksheet.clear())
-            time.sleep(1)  # API呼び出し後に待機
+            time.sleep(1)
         except gspread.WorksheetNotFound:
             worksheet = self.spreadsheet.add_worksheet(
                 title=sheet_name,
-                rows=1000,  # チャート挿入のため行数を増やす
+                rows=1000,
                 cols=10
             )
-            time.sleep(1)  # API呼び出し後に待機
+            time.sleep(1)
 
-        # セクターローテーションデータを取得（背景色設定用）
+        # Google Sheets API v4 サービスを構築
+        sheets_service = build('sheets', 'v4', credentials=self.gc.auth)
+
+        # セクターローテーションデータを取得
         print("\nIndustry Group象限データを読み込み中...")
         sector_rotation_df = self.db.get_sector_rotation_data()
 
         current_row = 1
-
-        # すべてのフォーマット処理を収集してバッチで実行
-        all_format_requests = []
+        all_format_requests = []  # すべてのフォーマットリクエストを収集
 
         for screener_name, tickers in screener_results.items():
             # スクリーナー名を出力
             header_row = current_row
             self._retry_api_call(lambda row=header_row, name=screener_name: worksheet.update(f'A{row}', [[name]]))
-            time.sleep(0.5)  # API呼び出し後に待機
+            time.sleep(0.5)
 
-            # ヘッダー行のフォーマット（後でバッチ処理）
-            header_format = {
-                'backgroundColor': {'red': 0.2, 'green': 0.4, 'blue': 0.6},
-                'textFormat': {
-                    'bold': True,
-                    'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
-                    'fontSize': 12
-                },
-                'horizontalAlignment': 'LEFT'
-            }
-            all_format_requests.append((f'A{header_row}:J{header_row}', header_format))
+            # ヘッダー行のフォーマットリクエストを追加
+            all_format_requests.append({
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': header_row - 1,
+                        'endRowIndex': header_row,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': 10
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'backgroundColor': {'red': 0.2, 'green': 0.4, 'blue': 0.6},
+                            'textFormat': {
+                                'bold': True,
+                                'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
+                                'fontSize': 12
+                            },
+                            'horizontalAlignment': 'LEFT'
+                        }
+                    },
+                    'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)'
+                }
+            })
 
-            self._retry_api_call(lambda row=header_row: worksheet.merge_cells(f'A{row}:J{row}'))
-            time.sleep(0.5)  # API呼び出し後に待機
+            # セルをマージ
+            all_format_requests.append({
+                'mergeCells': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': header_row - 1,
+                        'endRowIndex': header_row,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': 10
+                    },
+                    'mergeType': 'MERGE_ALL'
+                }
+            })
+
             current_row += 1
 
             # ティッカーを10個ずつ横に並べる
@@ -866,48 +888,67 @@ class IBDScreeners:
                 if rows_data:
                     start_row = current_row
                     end_row = start_row + len(rows_data) - 1
-                    self._retry_api_call(lambda s=start_row, e=end_row, data=rows_data: worksheet.update(f'A{s}:J{e}', data))
-                    time.sleep(1)  # API呼び出し後に待機
+                    self._retry_api_call(lambda s=start_row, e=end_row, data=rows_data:
+                                        worksheet.update(f'A{s}:J{e}', data))
+                    time.sleep(1)
 
-                    # 各ティッカーセルに背景色を適用（後でバッチ処理）
+                    # 各ティッカーセルの背景色リクエストを追加
                     print(f"  {screener_name}: ティッカーの背景色設定を準備中...")
                     for row_idx, row_tickers in enumerate(rows_data):
                         for col_idx, ticker in enumerate(row_tickers):
-                            if ticker:  # 空文字列でない場合のみ
+                            if ticker:
                                 quadrant = self._get_industry_group_quadrant(ticker, sector_rotation_df)
                                 if quadrant:
                                     cell_row = current_row + row_idx
-                                    cell_col = chr(65 + col_idx)  # A, B, C, ...
-                                    cell_range = f'{cell_col}{cell_row}'
-
                                     color = self._get_quadrant_color(quadrant)
-                                    cell_format = {
-                                        'backgroundColor': color,
-                                        'textFormat': {
-                                            'fontSize': 10
-                                        },
-                                        'horizontalAlignment': 'CENTER'
-                                    }
-                                    all_format_requests.append((cell_range, cell_format))
+
+                                    # repeatCellリクエストを追加（単一セル）
+                                    all_format_requests.append({
+                                        'repeatCell': {
+                                            'range': {
+                                                'sheetId': worksheet.id,
+                                                'startRowIndex': cell_row - 1,
+                                                'endRowIndex': cell_row,
+                                                'startColumnIndex': col_idx,
+                                                'endColumnIndex': col_idx + 1
+                                            },
+                                            'cell': {
+                                                'userEnteredFormat': {
+                                                    'backgroundColor': color,
+                                                    'textFormat': {'fontSize': 10},
+                                                    'horizontalAlignment': 'CENTER'
+                                                }
+                                            },
+                                            'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)'
+                                        }
+                                    })
 
                     current_row = end_row + 1
 
-            # スクリーナー間に空行を挿入
             current_row += 1
 
-        # すべてのフォーマットをバッチ処理（レート制限を回避）
+        # すべてのフォーマットリクエストを1回のbatchUpdateで実行
         if all_format_requests:
-            print(f"\n背景色を一括適用中（{len(all_format_requests)}個のセル）...")
-            batch_size = 100  # 100個ずつバッチ処理
+            print(f"\n背景色を一括適用中（{len(all_format_requests)}リクエスト）...")
+
+            # バッチサイズを100に設定（Google Sheets APIの推奨値内で安全）
+            batch_size = 100
             for i in range(0, len(all_format_requests), batch_size):
                 batch = all_format_requests[i:i+batch_size]
+
                 try:
-                    self._retry_api_call(lambda: worksheet.batch_format(batch))
-                    print(f"  進捗: {min(i + batch_size, len(all_format_requests))}/{len(all_format_requests)} セル完了")
+                    request_body = {'requests': batch}
+                    self._retry_api_call(
+                        lambda body=request_body: sheets_service.spreadsheets().batchUpdate(
+                            spreadsheetId=worksheet.spreadsheet.id,
+                            body=body
+                        ).execute()
+                    )
+                    print(f"  進捗: {min(i + batch_size, len(all_format_requests))}/{len(all_format_requests)} リクエスト完了")
                 except Exception as e:
-                    # エラー時はスキップ
                     print(f"  警告: バッチフォーマットエラー ({str(e)})、スキップします")
-                # レート制限回避のため待機
+
+                # レート制限回避のため待機（バッチ間のみ）
                 if i + batch_size < len(all_format_requests):
                     time.sleep(2)
 
@@ -916,35 +957,70 @@ class IBDScreeners:
         from sector_rotation_chart import SectorRotationChart
 
         chart_generator = SectorRotationChart(db_path=self.db.db_path)
-
-        # チャート画像をバイトデータとして生成
         chart_bytes = chart_generator.generate_chart_as_bytes(dpi=150)
         chart_generator.close()
 
         if chart_bytes:
-            # 空行を2行追加
             current_row += 2
 
-            # チャートタイトルを追加
             chart_title_row = current_row
-            self._retry_api_call(lambda row=chart_title_row: worksheet.update(f'A{row}', [['Industry Group RS Rotation Chart']]))
-            time.sleep(1)  # API呼び出し後に待機
-            title_format = {
-                'backgroundColor': {'red': 0.1, 'green': 0.1, 'blue': 0.1},
-                'textFormat': {
-                    'bold': True,
-                    'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
-                    'fontSize': 14
-                },
-                'horizontalAlignment': 'CENTER'
+            self._retry_api_call(lambda row=chart_title_row:
+                                worksheet.update(f'A{row}', [['Industry Group RS Rotation Chart']]))
+            time.sleep(1)
+
+            # タイトルのフォーマット（batchUpdateで実行）
+            title_format_request = {
+                'repeatCell': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': chart_title_row - 1,
+                        'endRowIndex': chart_title_row,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': 10
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'backgroundColor': {'red': 0.1, 'green': 0.1, 'blue': 0.1},
+                            'textFormat': {
+                                'bold': True,
+                                'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
+                                'fontSize': 14
+                            },
+                            'horizontalAlignment': 'CENTER'
+                        }
+                    },
+                    'fields': 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)'
+                }
             }
-            self._retry_api_call(lambda row=chart_title_row, fmt=title_format: worksheet.format(f'A{row}:J{row}', fmt))
-            time.sleep(1)  # API呼び出し後に待機
-            self._retry_api_call(lambda row=chart_title_row: worksheet.merge_cells(f'A{row}:J{row}'))
-            time.sleep(1)  # API呼び出し後に待機
+
+            merge_request = {
+                'mergeCells': {
+                    'range': {
+                        'sheetId': worksheet.id,
+                        'startRowIndex': chart_title_row - 1,
+                        'endRowIndex': chart_title_row,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': 10
+                    },
+                    'mergeType': 'MERGE_ALL'
+                }
+            }
+
+            try:
+                request_body = {'requests': [title_format_request, merge_request]}
+                self._retry_api_call(
+                    lambda body=request_body: sheets_service.spreadsheets().batchUpdate(
+                        spreadsheetId=worksheet.spreadsheet.id,
+                        body=body
+                    ).execute()
+                )
+                time.sleep(1)
+            except Exception as e:
+                print(f"  タイトルフォーマットエラー: {str(e)}")
+
             current_row += 1
 
-            # チャート画像をGoogle Driveにアップロードしてシートに挿入
+            # チャート画像を挿入
             try:
                 image_url = self._upload_image_to_drive_and_insert(
                     worksheet, chart_bytes, current_row, 'sector_rotation_chart.png'
@@ -953,24 +1029,10 @@ class IBDScreeners:
                     print(f"  チャートをGoogle Sheetsに挿入しました")
                 else:
                     print(f"  チャート画像のアップロードに失敗しました")
-                    # フォールバック: ローカルに保存
-                    with open('sector_rotation.png', 'wb') as f:
-                        f.write(chart_bytes)
-                    chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
-                    chart_row = current_row
-                    self._retry_api_call(lambda row=chart_row, text=chart_info_text: worksheet.update(f'A{row}', [[text]]))
-                    time.sleep(1)  # API呼び出し後に待機
             except Exception as e:
                 print(f"  チャート挿入エラー: {str(e)}")
-                # フォールバック: ローカルに保存
-                with open('sector_rotation.png', 'wb') as f:
-                    f.write(chart_bytes)
-                chart_info_text = f"セクターローテーションチャート: sector_rotation.png（ローカル保存）"
-                chart_row = current_row
-                self._retry_api_call(lambda row=chart_row, text=chart_info_text: worksheet.update(f'A{row}', [[text]]))
-                time.sleep(1)  # API呼び出し後に待機
         else:
-            print("  チャート生成に失敗しました（データが不足しています）")
+            print("  チャート生成に失敗しました")
 
         print(f"  '{sheet_name}' シートに出力完了")
 
