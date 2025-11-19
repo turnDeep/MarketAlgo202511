@@ -16,3 +16,8 @@ curl_cffi>=0.5.0
 
 # Environment Variables
 python-dotenv>=1.0.0
+
+# Charting (for Sector Rotation Chart)
+matplotlib>=3.7.0
+adjustText>=0.8.0
+Pillow>=10.0.0

@@ -212,6 +212,46 @@ class IBDDatabase:
             )
         ''')
 
+        # 12. 週次Industry Group RSテーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calculated_industry_group_rs_weekly (
+                ticker TEXT PRIMARY KEY,
+                sector TEXT,
+                industry TEXT,
+                stock_rs_weekly REAL,
+                industry_rs_weekly REAL,
+                industry_group_rs_weekly REAL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        # 13. 月次Industry Group RSテーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS calculated_industry_group_rs_monthly (
+                ticker TEXT PRIMARY KEY,
+                sector TEXT,
+                industry TEXT,
+                stock_rs_monthly REAL,
+                industry_rs_monthly REAL,
+                industry_group_rs_monthly REAL,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticker) REFERENCES tickers(ticker)
+            )
+        ''')
+
+        # 14. セクターローテーションチャート用集計テーブル
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sector_rotation_data (
+                sector TEXT,
+                industry TEXT PRIMARY KEY,
+                weekly_rs REAL,
+                monthly_rs REAL,
+                stock_count INTEGER,
+                calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         self.conn.commit()
         if not silent:
             print(f"データベースを初期化しました: {self.db_path}")
@@ -688,6 +728,78 @@ class IBDDatabase:
         row = cursor.fetchone()
         return dict(row) if row else None
 
+    # ==================== Industry Group RS (Weekly/Monthly) ====================
+
+    def insert_industry_group_rs_weekly(self, ticker: str, sector: str, industry: str,
+                                        stock_rs_weekly: float, industry_rs_weekly: float,
+                                        industry_group_rs_weekly: float):
+        """週次Industry Group RSを挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO calculated_industry_group_rs_weekly
+            (ticker, sector, industry, stock_rs_weekly, industry_rs_weekly,
+             industry_group_rs_weekly, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, sector, industry, stock_rs_weekly, industry_rs_weekly,
+              industry_group_rs_weekly))
+        self.conn.commit()
+
+    def insert_industry_group_rs_monthly(self, ticker: str, sector: str, industry: str,
+                                         stock_rs_monthly: float, industry_rs_monthly: float,
+                                         industry_group_rs_monthly: float):
+        """月次Industry Group RSを挿入"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            INSERT OR REPLACE INTO calculated_industry_group_rs_monthly
+            (ticker, sector, industry, stock_rs_monthly, industry_rs_monthly,
+             industry_group_rs_monthly, calculated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (ticker, sector, industry, stock_rs_monthly, industry_rs_monthly,
+              industry_group_rs_monthly))
+        self.conn.commit()
+
+    def get_all_industry_group_rs_weekly(self) -> Dict[str, float]:
+        """全銘柄の週次Industry Group RS値を取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT ticker, industry_group_rs_weekly
+            FROM calculated_industry_group_rs_weekly
+            WHERE industry_group_rs_weekly IS NOT NULL
+        ''')
+        return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def get_all_industry_group_rs_monthly(self) -> Dict[str, float]:
+        """全銘柄の月次Industry Group RS値を取得"""
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            SELECT ticker, industry_group_rs_monthly
+            FROM calculated_industry_group_rs_monthly
+            WHERE industry_group_rs_monthly IS NOT NULL
+        ''')
+        return {row[0]: row[1] for row in cursor.fetchall()}
+
+    # ==================== Sector Rotation Data ====================
+
+    def insert_sector_rotation_data(self, data: List[Dict]):
+        """セクターローテーションデータを一括挿入"""
+        cursor = self.conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO sector_rotation_data
+            (sector, industry, weekly_rs, monthly_rs, stock_count, calculated_at)
+            VALUES (:sector, :industry, :weekly_rs, :monthly_rs, :stock_count, CURRENT_TIMESTAMP)
+        ''', data)
+        self.conn.commit()
+
+    def get_sector_rotation_data(self) -> pd.DataFrame:
+        """セクターローテーションデータを取得"""
+        query = '''
+            SELECT sector, industry, weekly_rs, monthly_rs, stock_count
+            FROM sector_rotation_data
+            WHERE weekly_rs IS NOT NULL AND monthly_rs IS NOT NULL
+            ORDER BY sector, industry
+        '''
+        return pd.read_sql_query(query, self.conn)
+
     # ==================== ユーティリティ ====================
 
     def clear_all_data(self):
@@ -712,7 +824,9 @@ class IBDDatabase:
             'tickers', 'price_history', 'income_statements_quarterly',
             'income_statements_annual', 'company_profiles', 'calculated_rs',
             'calculated_eps', 'calculated_smr', 'calculated_ratings',
-            'sector_performance', 'calculated_industry_group_rs'
+            'sector_performance', 'calculated_industry_group_rs',
+            'calculated_industry_group_rs_weekly', 'calculated_industry_group_rs_monthly',
+            'sector_rotation_data'
         ]
 
         for table in tables:

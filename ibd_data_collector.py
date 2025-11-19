@@ -288,6 +288,54 @@ class IBDDataCollector:
         except Exception as e:
             return None, None, None, None, None
 
+    def calculate_rs_value_weekly(self, prices_df: pd.DataFrame) -> tuple:
+        """
+        週次RS値を計算（過去5-7営業日のパフォーマンス）
+
+        Returns:
+            tuple: (rs_weekly, roc_1w)
+        """
+        if prices_df is None or len(prices_df) < 7:
+            return None, None
+
+        try:
+            close = prices_df['close'].values
+
+            # 1週間のROC（Rate of Change）を計算
+            roc_1w = (close[-1] / close[-7] - 1) * 100 if close[-7] != 0 else 0
+
+            # 週次RS値は1週間のROCそのものを使用
+            rs_weekly = roc_1w
+
+            return rs_weekly, roc_1w
+
+        except Exception as e:
+            return None, None
+
+    def calculate_rs_value_monthly(self, prices_df: pd.DataFrame) -> tuple:
+        """
+        月次RS値を計算（過去20-25営業日のパフォーマンス）
+
+        Returns:
+            tuple: (rs_monthly, roc_1m)
+        """
+        if prices_df is None or len(prices_df) < 25:
+            return None, None
+
+        try:
+            close = prices_df['close'].values
+
+            # 1ヶ月のROC（Rate of Change）を計算
+            roc_1m = (close[-1] / close[-25] - 1) * 100 if close[-25] != 0 else 0
+
+            # 月次RS値は1ヶ月のROCそのものを使用
+            rs_monthly = roc_1m
+
+            return rs_monthly, roc_1m
+
+        except Exception as e:
+            return None, None
+
     # ==================== EPS要素の計算と保存 ====================
 
     def calculate_and_store_eps_components(self, tickers_list: List[str] = None):

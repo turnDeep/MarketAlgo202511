@@ -722,7 +722,7 @@ class IBDScreeners:
         print("="*80)
 
     def write_screeners_to_sheet(self, screener_results: Dict[str, List[str]]):
-        """スクリーナー結果をGoogleスプレッドシートに出力"""
+        """スクリーナー結果をGoogleスプレッドシートに出力（チャート画像を含む）"""
         # データベースから最新の価格データ日付を取得してシート名とする
         latest_date = self.db.get_latest_price_date()
         if latest_date:
@@ -738,7 +738,7 @@ class IBDScreeners:
         except gspread.WorksheetNotFound:
             worksheet = self.spreadsheet.add_worksheet(
                 title=sheet_name,
-                rows=500,
+                rows=1000,  # チャート挿入のため行数を増やす
                 cols=10
             )
 
@@ -778,6 +778,46 @@ class IBDScreeners:
 
             # スクリーナー間に空行を挿入
             current_row += 1
+
+        # セクターローテーションチャートを生成
+        print("\nセクターローテーションチャートを生成中...")
+        from sector_rotation_chart import SectorRotationChart
+
+        chart_generator = SectorRotationChart(db_path=self.db.db_path)
+
+        # チャート画像をローカルファイルとして生成
+        chart_path = chart_generator.generate_chart(output_path='sector_rotation.png', dpi=150)
+        chart_generator.close()
+
+        if chart_path:
+            # 空行を2行追加
+            current_row += 2
+
+            # チャートタイトルを追加
+            worksheet.update(f'A{current_row}', [['Industry Group RS Rotation Chart']])
+            title_format = {
+                'backgroundColor': {'red': 0.1, 'green': 0.1, 'blue': 0.1},
+                'textFormat': {
+                    'bold': True,
+                    'foregroundColor': {'red': 1, 'green': 1, 'blue': 1},
+                    'fontSize': 14
+                },
+                'horizontalAlignment': 'CENTER'
+            }
+            worksheet.format(f'A{current_row}:J{current_row}', title_format)
+            worksheet.merge_cells(f'A{current_row}:J{current_row}')
+            current_row += 1
+
+            # チャート画像の情報を追加
+            chart_info_text = f"セクターローテーションチャートが生成されました: {chart_path}"
+            worksheet.update(f'A{current_row}', [[chart_info_text]])
+            worksheet.merge_cells(f'A{current_row}:J{current_row}')
+
+            print(f"  チャートをローカルに生成しました: {chart_path}")
+            print(f"  注: Google Sheetsへの画像直接埋め込みは制限されているため、")
+            print(f"      チャート画像はローカルに保存されています。")
+        else:
+            print("  チャート生成に失敗しました（データが不足しています）")
 
         print(f"  '{sheet_name}' シートに出力完了")
 

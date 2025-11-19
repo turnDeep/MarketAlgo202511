@@ -731,6 +731,276 @@ class IBDRatingsCalculator:
 
         return industry_group_rs_dict
 
+    def calculate_all_industry_group_rs_weekly(self) -> Dict[str, float]:
+        """
+        全銘柄の週次Industry Group RSを計算
+
+        計算方法:
+        1. 各業界に属する全銘柄の週次RS値（過去1週間のパフォーマンス）の平均を計算
+        2. 業界平均週次RS値を全業界間でパーセンタイルランキングに変換
+        3. 各銘柄に所属業界のパーセンタイルランキングを割り当て
+
+        Returns:
+            dict: {ticker: industry_group_rs_weekly_percentile} の辞書
+        """
+        print("\n全銘柄の週次Industry Group RSを計算中...")
+
+        # 全銘柄の週次RS値を計算して取得
+        from ibd_data_collector import IBDDataCollector
+        collector = IBDDataCollector(fmp_api_key='', db_path=self.db.db_path)
+
+        all_tickers = self.db.get_all_tickers()
+        weekly_rs_values = {}  # {ticker: rs_weekly}
+
+        for ticker in all_tickers:
+            prices_df = self.db.get_price_history(ticker, days=10)
+            if prices_df is not None and len(prices_df) >= 7:
+                rs_weekly, _ = collector.calculate_rs_value_weekly(prices_df)
+                if rs_weekly is not None:
+                    weekly_rs_values[ticker] = rs_weekly
+
+        # 業界ごとにグループ化
+        industry_tickers = {}
+        industry_rs_values = {}
+        ticker_to_info = {}
+
+        for idx, ticker in enumerate(all_tickers):
+            if (idx + 1) % 500 == 0:
+                print(f"  進捗: {idx + 1}/{len(all_tickers)} 銘柄")
+
+            try:
+                profile = self.db.get_company_profile(ticker)
+                if not profile:
+                    continue
+
+                industry = profile.get('industry')
+                sector = profile.get('sector')
+
+                if not industry and sector:
+                    industry = sector
+
+                if not industry:
+                    continue
+
+                rs_weekly = weekly_rs_values.get(ticker)
+
+                if rs_weekly is not None:
+                    if industry not in industry_tickers:
+                        industry_tickers[industry] = []
+                        industry_rs_values[industry] = []
+
+                    industry_tickers[industry].append(ticker)
+                    industry_rs_values[industry].append(rs_weekly)
+                    ticker_to_info[ticker] = (industry, sector)
+
+            except Exception as e:
+                continue
+
+        print(f"  {len(industry_tickers)} 業界グループを検出")
+
+        # 各業界の平均週次RS値を計算
+        industry_avg_rs_weekly = {}
+        for industry, rs_list in industry_rs_values.items():
+            if rs_list and len(rs_list) >= 3:
+                industry_avg_rs_weekly[industry] = np.mean(rs_list)
+
+        print(f"  {len(industry_avg_rs_weekly)} 業界グループの週次RS平均値を計算")
+
+        # 業界平均RS値をパーセンタイルランキングに変換
+        industry_rs_percentile = self.calculate_percentile_ranking(industry_avg_rs_weekly)
+
+        # データベースに保存
+        success_count = 0
+        for ticker, (industry, sector) in ticker_to_info.items():
+            try:
+                stock_rs_weekly = weekly_rs_values.get(ticker)
+                industry_rs_weekly = industry_avg_rs_weekly.get(industry)
+                industry_group_rs_percentile = industry_rs_percentile.get(industry)
+
+                if industry_group_rs_percentile is not None:
+                    self.db.insert_industry_group_rs_weekly(
+                        ticker,
+                        sector if sector else industry,
+                        industry,
+                        stock_rs_weekly,
+                        industry_rs_weekly,
+                        industry_group_rs_percentile
+                    )
+                    success_count += 1
+            except Exception as e:
+                continue
+
+        print(f"  {success_count} 銘柄の週次Industry Group RSを計算しました")
+
+        # 結果を返す
+        industry_group_rs_dict = {}
+        for ticker, (industry, _) in ticker_to_info.items():
+            percentile = industry_rs_percentile.get(industry)
+            if percentile is not None:
+                industry_group_rs_dict[ticker] = percentile
+
+        return industry_group_rs_dict
+
+    def calculate_all_industry_group_rs_monthly(self) -> Dict[str, float]:
+        """
+        全銘柄の月次Industry Group RSを計算
+
+        週次と同様の方法で、過去1ヶ月（20-25営業日）のパフォーマンスを使用
+        """
+        print("\n全銘柄の月次Industry Group RSを計算中...")
+
+        # 全銘柄の月次RS値を計算して取得
+        from ibd_data_collector import IBDDataCollector
+        collector = IBDDataCollector(fmp_api_key='', db_path=self.db.db_path)
+
+        all_tickers = self.db.get_all_tickers()
+        monthly_rs_values = {}  # {ticker: rs_monthly}
+
+        for ticker in all_tickers:
+            prices_df = self.db.get_price_history(ticker, days=30)
+            if prices_df is not None and len(prices_df) >= 25:
+                rs_monthly, _ = collector.calculate_rs_value_monthly(prices_df)
+                if rs_monthly is not None:
+                    monthly_rs_values[ticker] = rs_monthly
+
+        # 業界ごとにグループ化
+        industry_tickers = {}
+        industry_rs_values = {}
+        ticker_to_info = {}
+
+        for idx, ticker in enumerate(all_tickers):
+            if (idx + 1) % 500 == 0:
+                print(f"  進捗: {idx + 1}/{len(all_tickers)} 銘柄")
+
+            try:
+                profile = self.db.get_company_profile(ticker)
+                if not profile:
+                    continue
+
+                industry = profile.get('industry')
+                sector = profile.get('sector')
+
+                if not industry and sector:
+                    industry = sector
+
+                if not industry:
+                    continue
+
+                rs_monthly = monthly_rs_values.get(ticker)
+
+                if rs_monthly is not None:
+                    if industry not in industry_tickers:
+                        industry_tickers[industry] = []
+                        industry_rs_values[industry] = []
+
+                    industry_tickers[industry].append(ticker)
+                    industry_rs_values[industry].append(rs_monthly)
+                    ticker_to_info[ticker] = (industry, sector)
+
+            except Exception as e:
+                continue
+
+        print(f"  {len(industry_tickers)} 業界グループを検出")
+
+        # 各業界の平均月次RS値を計算
+        industry_avg_rs_monthly = {}
+        for industry, rs_list in industry_rs_values.items():
+            if rs_list and len(rs_list) >= 3:
+                industry_avg_rs_monthly[industry] = np.mean(rs_list)
+
+        print(f"  {len(industry_avg_rs_monthly)} 業界グループの月次RS平均値を計算")
+
+        # 業界平均RS値をパーセンタイルランキングに変換
+        industry_rs_percentile = self.calculate_percentile_ranking(industry_avg_rs_monthly)
+
+        # データベースに保存
+        success_count = 0
+        for ticker, (industry, sector) in ticker_to_info.items():
+            try:
+                stock_rs_monthly = monthly_rs_values.get(ticker)
+                industry_rs_monthly = industry_avg_rs_monthly.get(industry)
+                industry_group_rs_percentile = industry_rs_percentile.get(industry)
+
+                if industry_group_rs_percentile is not None:
+                    self.db.insert_industry_group_rs_monthly(
+                        ticker,
+                        sector if sector else industry,
+                        industry,
+                        stock_rs_monthly,
+                        industry_rs_monthly,
+                        industry_group_rs_percentile
+                    )
+                    success_count += 1
+            except Exception as e:
+                continue
+
+        print(f"  {success_count} 銘柄の月次Industry Group RSを計算しました")
+
+        # 結果を返す
+        industry_group_rs_dict = {}
+        for ticker, (industry, _) in ticker_to_info.items():
+            percentile = industry_rs_percentile.get(industry)
+            if percentile is not None:
+                industry_group_rs_dict[ticker] = percentile
+
+        return industry_group_rs_dict
+
+    def generate_sector_rotation_data(self):
+        """
+        セクターローテーションチャート用のデータを生成してDBに保存
+        """
+        print("\nセクターローテーションデータを生成中...")
+
+        # 週次と月次のIndustry Group RSデータを取得
+        query_weekly = '''
+            SELECT sector, industry,
+                   AVG(industry_rs_weekly) as avg_weekly_rs,
+                   COUNT(*) as stock_count
+            FROM calculated_industry_group_rs_weekly
+            WHERE industry_rs_weekly IS NOT NULL
+            GROUP BY sector, industry
+            HAVING stock_count >= 3
+        '''
+
+        query_monthly = '''
+            SELECT sector, industry,
+                   AVG(industry_rs_monthly) as avg_monthly_rs,
+                   COUNT(*) as stock_count
+            FROM calculated_industry_group_rs_monthly
+            WHERE industry_rs_monthly IS NOT NULL
+            GROUP BY sector, industry
+            HAVING stock_count >= 3
+        '''
+
+        df_weekly = pd.read_sql_query(query_weekly, self.db.conn)
+        df_monthly = pd.read_sql_query(query_monthly, self.db.conn)
+
+        # データをマージ
+        df_merged = pd.merge(
+            df_weekly[['sector', 'industry', 'avg_weekly_rs', 'stock_count']],
+            df_monthly[['sector', 'industry', 'avg_monthly_rs']],
+            on=['sector', 'industry'],
+            how='inner'
+        )
+
+        # データベース用にフォーマット
+        rotation_data = []
+        for _, row in df_merged.iterrows():
+            rotation_data.append({
+                'sector': row['sector'],
+                'industry': row['industry'],
+                'weekly_rs': row['avg_weekly_rs'],
+                'monthly_rs': row['avg_monthly_rs'],
+                'stock_count': row['stock_count']
+            })
+
+        # データベースに保存
+        if rotation_data:
+            self.db.insert_sector_rotation_data(rotation_data)
+            print(f"  {len(rotation_data)} 業界グループのローテーションデータを保存しました")
+        else:
+            print("  保存するローテーションデータがありません")
+
     # ==================== 52週高値からの距離計算 ====================
 
     def calculate_52w_high_distance(self, ticker: str) -> Optional[float]:
@@ -896,10 +1166,15 @@ class IBDRatingsCalculator:
         # 4. SMR Ratingを計算（パーセンタイルランキング方式）
         smr_ratings_dict = self.calculate_smr_ratings()
 
-        # 5. Industry Group RSを計算
+        # 5. Industry Group RSを計算（52週、週次、月次）
         industry_group_rs_ratings_dict = self.calculate_all_industry_group_rs()
+        industry_group_rs_weekly_dict = self.calculate_all_industry_group_rs_weekly()
+        industry_group_rs_monthly_dict = self.calculate_all_industry_group_rs_monthly()
 
-        # 6. 全銘柄のA/D RatingとComposite Ratingを計算
+        # 6. セクターローテーションデータを生成
+        self.generate_sector_rotation_data()
+
+        # 7. 全銘柄のA/D RatingとComposite Ratingを計算
         print(f"\n全 {len(all_tickers)} 銘柄のA/D RatingとComposite Ratingを計算中...")
 
         # 7. 各銘柄のA/D Rating、52W High Distance、Composite Ratingを計算
