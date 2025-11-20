@@ -32,6 +32,7 @@ def main():
     FMP_API_KEY = os.getenv('FMP_API_KEY')
     CREDENTIALS_FILE = os.getenv('CREDENTIALS_FILE', 'credentials.json')
     SPREADSHEET_NAME = os.getenv('SPREADSHEET_NAME', 'Market Dashboard')
+    DRIVE_FOLDER_ID = os.getenv('GDRIVE_FOLDER_ID')  # オプション: 画像アップロード用の共有フォルダID
     MAX_WORKERS = int(os.getenv('ORATNEK_MAX_WORKERS', '3'))  # Default: 3 (Starter), Recommended: 6 (Premium), 10+ (Professional)
     DB_PATH = os.getenv('IBD_DB_PATH', 'ibd_data.db')
 
@@ -113,7 +114,8 @@ def main():
             screeners = IBDScreeners(
                 credentials_file=CREDENTIALS_FILE,
                 spreadsheet_name=SPREADSHEET_NAME,
-                db_path=DB_PATH
+                db_path=DB_PATH,
+                drive_folder_id=DRIVE_FOLDER_ID
             )
             screeners.run_all_screeners()
             screeners.close()
