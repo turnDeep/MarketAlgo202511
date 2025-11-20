@@ -1070,11 +1070,25 @@ class IBDScreeners:
             # gspreadの認証情報を再利用
             drive_service = build('drive', 'v3', credentials=self.credentials)
 
+            # スプレッドシートの親フォルダIDを取得
+            spreadsheet_id = worksheet.spreadsheet.id
+            file_metadata_query = drive_service.files().get(
+                fileId=spreadsheet_id,
+                fields='parents'
+            ).execute()
+
+            parent_folder_ids = file_metadata_query.get('parents', [])
+
             # 画像をGoogle Driveにアップロード
+            # スプレッドシートと同じ親フォルダに配置してストレージクォータ問題を回避
             file_metadata = {
                 'name': filename,
                 'mimeType': 'image/png'
             }
+
+            # 親フォルダが存在する場合は指定
+            if parent_folder_ids:
+                file_metadata['parents'] = parent_folder_ids
 
             media = MediaInMemoryUpload(image_bytes, mimetype='image/png', resumable=True)
 
