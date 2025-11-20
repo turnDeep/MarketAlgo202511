@@ -7,6 +7,7 @@ IBD Screeners
 import gspread
 import numpy as np
 from typing import List, Dict, Optional
+from google.oauth2.service_account import Credentials
 
 from ibd_database import IBDDatabase
 
@@ -26,6 +27,14 @@ class IBDScreeners:
         # Google Sheets認証
         try:
             self.gc = gspread.service_account(filename=credentials_file)
+            # Google Sheets API用の認証情報を別途読み込む
+            self.credentials = Credentials.from_service_account_file(
+                credentials_file,
+                scopes=[
+                    'https://www.googleapis.com/auth/spreadsheets',
+                    'https://www.googleapis.com/auth/drive'
+                ]
+            )
         except FileNotFoundError:
             print(f"エラー: 認証情報ファイル '{credentials_file}' が見つかりません")
             raise
@@ -820,7 +829,7 @@ class IBDScreeners:
             time.sleep(1)
 
         # Google Sheets API v4 サービスを構築
-        sheets_service = build('sheets', 'v4', credentials=self.gc.auth)
+        sheets_service = build('sheets', 'v4', credentials=self.credentials)
 
         # セクターローテーションデータを取得
         print("\nIndustry Group象限データを読み込み中...")
@@ -1059,7 +1068,7 @@ class IBDScreeners:
 
             # Google Drive APIサービスを構築
             # gspreadの認証情報を再利用
-            drive_service = build('drive', 'v3', credentials=self.gc.auth)
+            drive_service = build('drive', 'v3', credentials=self.credentials)
 
             # 画像をGoogle Driveにアップロード
             file_metadata = {
@@ -1095,7 +1104,7 @@ class IBDScreeners:
             # セルのサイズを調整（行の高さを設定）
             # Google Sheets APIを使用して行の高さを設定
             try:
-                sheets_service = build('sheets', 'v4', credentials=self.gc.auth)
+                sheets_service = build('sheets', 'v4', credentials=self.credentials)
 
                 # 行の高さを600ピクセルに設定
                 request_body = {
