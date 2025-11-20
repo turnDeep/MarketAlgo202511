@@ -15,14 +15,17 @@ from ibd_database import IBDDatabase
 class IBDScreeners:
     """データベースを使用したIBDスクリーナー"""
 
-    def __init__(self, credentials_file: str, spreadsheet_name: str, db_path: str = 'ibd_data.db'):
+    def __init__(self, credentials_file: str, spreadsheet_name: str, db_path: str = 'ibd_data.db',
+                 drive_folder_id: str = None):
         """
         Args:
             credentials_file: Googleサービスアカウントの認証情報JSONファイルパス
             spreadsheet_name: Googleスプレッドシートの名前
             db_path: データベースファイルのパス
+            drive_folder_id: Google Driveの共有フォルダID（画像アップロード用、オプション）
         """
         self.db = IBDDatabase(db_path)
+        self.drive_folder_id = drive_folder_id
 
         # Google Sheets認証
         try:
@@ -1070,25 +1073,30 @@ class IBDScreeners:
             # gspreadの認証情報を再利用
             drive_service = build('drive', 'v3', credentials=self.credentials)
 
-            # スプレッドシートの親フォルダIDを取得
-            spreadsheet_id = worksheet.spreadsheet.id
-            file_metadata_query = drive_service.files().get(
-                fileId=spreadsheet_id,
-                fields='parents'
-            ).execute()
-
-            parent_folder_ids = file_metadata_query.get('parents', [])
-
             # 画像をGoogle Driveにアップロード
-            # スプレッドシートと同じ親フォルダに配置してストレージクォータ問題を回避
             file_metadata = {
                 'name': filename,
                 'mimeType': 'image/png'
             }
 
-            # 親フォルダが存在する場合は指定
-            if parent_folder_ids:
-                file_metadata['parents'] = parent_folder_ids
+            # 共有フォルダIDが指定されている場合は使用、なければスプレッドシートの親フォルダを取得
+            if self.drive_folder_id:
+                file_metadata['parents'] = [self.drive_folder_id]
+            else:
+                # スプレッドシートの親フォルダIDを取得
+                spreadsheet_id = worksheet.spreadsheet.id
+                try:
+                    file_metadata_query = drive_service.files().get(
+                        fileId=spreadsheet_id,
+                        fields='parents'
+                    ).execute()
+                    parent_folder_ids = file_metadata_query.get('parents', [])
+                    if parent_folder_ids:
+                        file_metadata['parents'] = parent_folder_ids
+                except Exception as e:
+                    print(f"  警告: スプレッドシートの親フォルダ取得に失敗: {str(e)}")
+                    # 親フォルダが取得できない場合はルートにアップロード（失敗する可能性あり）
+                    pass
 
             media = MediaInMemoryUpload(image_bytes, mimetype='image/png', resumable=True)
 
@@ -1170,9 +1178,15 @@ def main():
 
     CREDENTIALS_FILE = os.getenv('CREDENTIALS_FILE', 'credentials.json')
     SPREADSHEET_NAME = os.getenv('SPREADSHEET_NAME', 'Market Dashboard')
+    DRIVE_FOLDER_ID = os.getenv('GDRIVE_FOLDER_ID')  # オプション: 共有フォルダID
+
+    if DRIVE_FOLDER_ID:
+        print(f"画像アップロード用の共有フォルダID: {DRIVE_FOLDER_ID}")
+    else:
+        print("警告: GDRIVE_FOLDER_IDが設定されていません。画像アップロードはスキップされる可能性があります。")
 
     try:
-        screeners = IBDScreeners(CREDENTIALS_FILE, SPREADSHEET_NAME)
+        screeners = IBDScreeners(CREDENTIALS_FILE, SPREADSHEET_NAME, drive_folder_id=DRIVE_FOLDER_ID)
         screeners.run_all_screeners()
         screeners.close()
 
