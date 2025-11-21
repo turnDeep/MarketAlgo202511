@@ -25,7 +25,8 @@ class IBDScreeners:
             drive_folder_id: Google Driveの共有フォルダID（画像アップロード用、オプション）
         """
         self.db = IBDDatabase(db_path)
-        self.drive_folder_id = drive_folder_id
+        # URLパラメータを除去（?hl=ja などが含まれている場合に対応）
+        self.drive_folder_id = drive_folder_id.split('?')[0] if drive_folder_id and '?' in drive_folder_id else drive_folder_id
 
         # Google Sheets認証
         try:
@@ -1081,7 +1082,9 @@ class IBDScreeners:
 
             # 共有フォルダIDが指定されている場合は使用、なければスプレッドシートの親フォルダを取得
             if self.drive_folder_id:
-                file_metadata['parents'] = [self.drive_folder_id]
+                # URLパラメータを除去（?hl=ja などが含まれている場合に対応）
+                clean_folder_id = self.drive_folder_id.split('?')[0] if '?' in self.drive_folder_id else self.drive_folder_id
+                file_metadata['parents'] = [clean_folder_id]
             else:
                 # スプレッドシートの親フォルダIDを取得
                 spreadsheet_id = worksheet.spreadsheet.id
@@ -1091,6 +1094,11 @@ class IBDScreeners:
                         fields='parents'
                     ).execute()
                     parent_folder_ids = file_metadata_query.get('parents', [])
+                    # URLパラメータを除去（?hl=ja などが含まれている場合に対応）
+                    parent_folder_ids = [
+                        folder_id.split('?')[0] if folder_id and '?' in folder_id else folder_id
+                        for folder_id in parent_folder_ids
+                    ]
                     if parent_folder_ids:
                         file_metadata['parents'] = parent_folder_ids
                 except Exception as e:
